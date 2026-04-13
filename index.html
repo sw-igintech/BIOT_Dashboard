@@ -1,0 +1,248 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <meta name="color-scheme" content="light" />
+  <title>BIOT Devices Dashboard</title>
+  <script>
+    window.DASHBOARD_CONFIG = {
+      appsScriptUrl: "PASTE_YOUR_DEPLOYED_APPS_SCRIPT_WEB_APP_URL_HERE"
+    };
+  </script>
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js" defer></script>
+  <link rel="stylesheet" href="./dashboard.css" />
+  <script src="./dashboard.js" defer></script>
+</head>
+<body>
+  <div class="app-shell">
+    <aside class="sidebar" aria-label="Application information">
+      <section class="brand-panel">
+        <div class="eyebrow">BIOT</div>
+        <h1>Devices Dashboard</h1>
+        <p class="brand-copy">
+          Static GitHub Pages frontend with a Google Apps Script BIOT backend.
+        </p>
+      </section>
+
+      <section class="sidebar-card">
+        <div class="section-label">Deployment</div>
+        <div class="viewer-grid">
+          <div class="viewer-row">
+            <span>Frontend</span>
+            <strong>GitHub Pages</strong>
+          </div>
+          <div class="viewer-row">
+            <span>Backend</span>
+            <strong>Google Apps Script</strong>
+          </div>
+          <div class="viewer-row">
+            <span>Endpoint</span>
+            <strong id="endpointStatus">Configuration required</strong>
+          </div>
+        </div>
+        <div id="endpointUrlLabel" class="config-copy">
+          Set `window.DASHBOARD_CONFIG.appsScriptUrl` in this file before testing.
+        </div>
+      </section>
+
+      <section class="sidebar-card">
+        <div class="section-label">BIOT Scope</div>
+        <div id="viewerEmpty" class="session-empty">
+          The dashboard uses the BIOT credentials stored in Apps Script Script Properties.
+        </div>
+
+        <div id="viewerDetails" class="session-details hidden">
+          <div id="viewerName" class="identity-name"></div>
+          <div id="viewerMeta" class="identity-meta"></div>
+          <div class="chip-row">
+            <span id="roleChip" class="chip"></span>
+            <span id="orgChip" class="chip subtle"></span>
+          </div>
+        </div>
+      </section>
+
+      <section class="sidebar-card">
+        <div class="section-label">Data Mapping</div>
+        <div class="stack-list">
+          <div class="stack-item">
+            <div class="stack-title">Devices</div>
+            <div class="stack-value">`GET /device/v2/devices`</div>
+          </div>
+          <div class="stack-item">
+            <div class="stack-title">Glove Events</div>
+            <div class="stack-value">`GET /generic-entity/v3/generic-entities/device_event`</div>
+          </div>
+          <div class="stack-item">
+            <div class="stack-title">Auth</div>
+            <div class="stack-value">BIOT credentials stay only inside Apps Script</div>
+          </div>
+        </div>
+      </section>
+    </aside>
+
+    <main class="main">
+      <header class="page-header">
+        <div>
+          <div class="eyebrow">Operational Dashboard</div>
+          <h2>Devices Dashboard</h2>
+          <p id="pageSub" class="page-sub">Real BIOT data delivered through a Google Apps Script web app.</p>
+        </div>
+
+        <div class="header-status">
+          <div class="status-pill">
+            <span>Last Refresh</span>
+            <strong id="lastRefreshLabel">-</strong>
+          </div>
+          <div class="status-pill accent">
+            <span>Backend</span>
+            <strong>Apps Script</strong>
+          </div>
+        </div>
+      </header>
+
+      <section class="filter-card">
+        <div class="filter-grid">
+          <label class="field">
+            <span>From</span>
+            <input id="fromDate" type="date" />
+          </label>
+
+          <label class="field">
+            <span>To</span>
+            <input id="toDate" type="date" />
+          </label>
+
+          <label id="organizationField" class="field hidden">
+            <span>Organization</span>
+            <select id="organizationSelect"></select>
+          </label>
+
+          <div class="filter-actions">
+            <button id="refreshBtn" class="primary-button" type="button">Refresh</button>
+          </div>
+        </div>
+
+        <div class="filter-meta">
+          <span id="scopeLabel">Scope: -</span>
+          <span id="timeLabel">Window: -</span>
+        </div>
+      </section>
+
+      <div id="dashboardError" class="inline-error hidden"></div>
+      <div id="dashboardLoading" class="loading-strip hidden">Loading live BIOT data from Apps Script...</div>
+
+      <section class="card-grid">
+        <article class="card chart-card">
+          <div class="card-header">
+            <div>
+              <h3>Device Connection Status</h3>
+              <p>Total, connected, disconnected, and unknown devices in the selected scope.</p>
+            </div>
+          </div>
+
+          <div id="connectionMetrics" class="metric-grid"></div>
+
+          <div class="chart-layout">
+            <div class="chart-area">
+              <canvas id="connectionChart" aria-label="Device connection status chart"></canvas>
+            </div>
+            <div id="connectionLegend" class="legend"></div>
+          </div>
+        </article>
+
+        <article class="card chart-card">
+          <div class="card-header">
+            <div>
+              <h3>Glove Consumption</h3>
+              <p>Total BIOT `GLOVE_TAKEN` events by cartridge size for the selected range.</p>
+            </div>
+          </div>
+
+          <div id="gloveMetrics" class="metric-grid"></div>
+
+          <div class="chart-layout">
+            <div class="chart-area">
+              <canvas id="gloveChart" aria-label="Glove consumption chart"></canvas>
+            </div>
+            <div id="gloveLegend" class="legend"></div>
+          </div>
+        </article>
+
+        <article class="card chart-card">
+          <div class="card-header">
+            <div>
+              <h3>Sanitizer Status</h3>
+              <p>Availability mapped from BIOT sanitizer status fields.</p>
+            </div>
+          </div>
+
+          <div id="sanitizerMetrics" class="metric-grid"></div>
+
+          <div class="chart-layout">
+            <div class="chart-area">
+              <canvas id="sanitizerChart" aria-label="Sanitizer status chart"></canvas>
+            </div>
+            <div id="sanitizerLegend" class="legend"></div>
+          </div>
+        </article>
+      </section>
+
+      <section class="table-grid">
+        <article class="card table-card">
+          <div class="card-header">
+            <div>
+              <h3>Offline Devices</h3>
+              <p id="offlineSubtitle">Disconnected devices only.</p>
+            </div>
+            <div id="offlineCount" class="count-badge">0</div>
+          </div>
+
+          <div class="table-wrap">
+            <table>
+              <thead>
+                <tr>
+                  <th>ID</th>
+                  <th>Last Connected At</th>
+                  <th>Connected</th>
+                </tr>
+              </thead>
+              <tbody id="offlineTableBody"></tbody>
+            </table>
+          </div>
+
+          <div id="offlineEmpty" class="empty-state hidden">
+            No disconnected devices found for the selected filters.
+          </div>
+        </article>
+
+        <article class="card table-card">
+          <div class="card-header">
+            <div>
+              <h3>Sanitizer Devices</h3>
+              <p id="sanitizerSubtitle">All devices with mapped sanitizer status values.</p>
+            </div>
+            <div id="sanitizerCount" class="count-badge">0</div>
+          </div>
+
+          <div class="table-wrap">
+            <table>
+              <thead>
+                <tr>
+                  <th>ID</th>
+                  <th>Sanitizer Status</th>
+                </tr>
+              </thead>
+              <tbody id="sanitizerTableBody"></tbody>
+            </table>
+          </div>
+
+          <div id="sanitizerEmpty" class="empty-state hidden">
+            No sanitizer devices found for the selected filters.
+          </div>
+        </article>
+      </section>
+    </main>
+  </div>
+</body>
+</html>
