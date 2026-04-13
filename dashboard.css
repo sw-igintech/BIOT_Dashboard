@@ -908,3 +908,88 @@ tbody tr:last-child td
     padding: 24px;
   }
 }
+
+.product-shell
+{
+  display: block;
+  max-width: 1600px;
+  margin: 0 auto;
+  padding: 28px 24px 40px;
+}
+
+.product-main
+{
+  min-width: 0;
+}
+
+.dashboard-head
+{
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  margin-bottom: 20px;
+}
+
+.dashboard-heading h1
+{
+  margin: 8px 0 0;
+  font-size: clamp(2rem, 4vw, 3rem);
+  letter-spacing: -0.04em;
+}
+
+.compact-filters
+{
+  padding: 18px 20px;
+}
+
+.product-filter-grid
+{
+  grid-template-columns: repeat(3, minmax(160px, 220px)) auto;
+}
+
+.simple-card-header
+{
+  margin-bottom: 0;
+}
+
+.simple-card-header h3
+{
+  margin: 0;
+}
+
+.simple-card-header p
+{
+  display: none;
+}
+
+.card-grid
+{
+  margin-top: 0;
+}
+
+@media (max-width: 1200px)
+{
+  .product-filter-grid
+  {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
+@media (max-width: 720px)
+{
+  .product-shell
+  {
+    padding: 18px 14px 28px;
+  }
+
+  .dashboard-head
+  {
+    margin-bottom: 16px;
+  }
+
+  .product-filter-grid
+  {
+    grid-template-columns: 1fr;
+  }
+}

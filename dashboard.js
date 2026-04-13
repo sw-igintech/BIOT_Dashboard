@@ -56,7 +56,6 @@ if (window.Chart) {
 document.addEventListener("DOMContentLoaded", () => {
   setDefaultDates();
   wireUi();
-  updateEndpointUi();
   refreshDashboard();
 });
 
@@ -69,9 +68,7 @@ async function refreshDashboard() {
   const appsScriptUrl = getAppsScriptUrl();
   if (!appsScriptUrl) {
     destroyCharts();
-    showDashboardError(
-      "Set window.DASHBOARD_CONFIG.appsScriptUrl in index.html to your deployed Apps Script Web App URL before testing."
-    );
+    showDashboardError("Dashboard service is not configured.");
     return;
   }
 
@@ -106,7 +103,6 @@ async function refreshDashboard() {
     }
 
     state.summary = summary;
-    renderViewer(summary.viewer, summary.meta);
     renderOrganizationSelector(summary);
     renderSummary(summary);
   } catch (error) {
@@ -114,37 +110,12 @@ async function refreshDashboard() {
       return;
     }
     destroyCharts();
-    showDashboardError(error.message);
+    showDashboardError(error.message || "Unable to load dashboard data right now.");
   } finally {
     if (requestId === state.requestId) {
       setDashboardLoading(false);
     }
   }
-}
-
-function renderViewer(viewer, meta) {
-  const viewerEmpty = document.getElementById("viewerEmpty");
-  const viewerDetails = document.getElementById("viewerDetails");
-
-  viewerEmpty.classList.add("hidden");
-  viewerDetails.classList.remove("hidden");
-
-  document.getElementById("viewerName").textContent = viewer.displayName || "Configured BIOT account";
-
-  const metaParts = [];
-  if (viewer.email) {
-    metaParts.push(viewer.email);
-  }
-  if (Array.isArray(viewer.groups) && viewer.groups.length > 0) {
-    metaParts.push(viewer.groups.join(", "));
-  }
-  if (meta && meta.bioutil) {
-    metaParts.push(meta.bioutil);
-  }
-
-  document.getElementById("viewerMeta").textContent = metaParts.join(" • ");
-  document.getElementById("roleChip").textContent = viewer.role === "manufacturer" ? "Manufacturer" : "Organization";
-  document.getElementById("orgChip").textContent = viewer.ownerOrganizationId || "No owner organization";
 }
 
 function renderOrganizationSelector(summary) {
@@ -178,17 +149,13 @@ function renderOrganizationSelector(summary) {
 }
 
 function renderSummary(summary) {
-  document.getElementById("pageSub").textContent = `Live BIOT data for ${summary.scope.organizationLabel}.`;
-  document.getElementById("lastRefreshLabel").textContent = formatDateTime(summary.meta.generatedAt);
-  document.getElementById("scopeLabel").textContent = `Scope: ${summary.scope.organizationLabel}`;
-  document.getElementById("timeLabel").textContent = `Window: ${summary.scope.from} to ${summary.scope.to} (${summary.scope.timezone})`;
-
   renderMetrics("connectionMetrics", [
     { label: "Total Devices", value: summary.connection.total },
     { label: "Connected", value: summary.connection.counts.connected },
     { label: "Disconnected", value: summary.connection.counts.disconnected },
     { label: "Unknown", value: summary.connection.counts.unknown },
   ]);
+
   renderMetrics("gloveMetrics", [
     { label: "Total Events", value: summary.gloves.total },
     { label: "Small", value: summary.gloves.counts.small },
@@ -197,6 +164,7 @@ function renderSummary(summary) {
     { label: "Extra Large", value: summary.gloves.counts.extraLarge },
     { label: "Unknown", value: summary.gloves.counts.unknown },
   ]);
+
   renderMetrics("sanitizerMetrics", [
     { label: "Devices", value: summary.sanitizer.total },
     { label: "Available", value: summary.sanitizer.counts.available },
@@ -345,7 +313,6 @@ function renderOfflineTable(offlineDevices) {
   body.innerHTML = "";
 
   document.getElementById("offlineCount").textContent = formatNumber(offlineDevices.total);
-  document.getElementById("offlineSubtitle").textContent = `${formatNumber(offlineDevices.total)} disconnected devices in the selected scope.`;
 
   if (!offlineDevices.items || offlineDevices.items.length === 0) {
     empty.classList.remove("hidden");
@@ -369,7 +336,6 @@ function renderSanitizerTable(sanitizer) {
   body.innerHTML = "";
 
   document.getElementById("sanitizerCount").textContent = formatNumber(sanitizer.total);
-  document.getElementById("sanitizerSubtitle").textContent = `${formatNumber(sanitizer.total)} devices with sanitizer status values.`;
 
   if (!sanitizer.devices || sanitizer.devices.length === 0) {
     empty.classList.remove("hidden");
@@ -386,7 +352,7 @@ function renderSanitizerTable(sanitizer) {
     const statusBadge = buildStatusBadge(device.status);
     const rawValue = document.createElement("div");
     rawValue.className = "muted-copy";
-    rawValue.textContent = `Raw value: ${formatRawValue(device.value)}`;
+    rawValue.textContent = `Value: ${formatRawValue(device.value)}`;
 
     statusCell.appendChild(statusBadge);
     statusCell.appendChild(rawValue);
@@ -452,7 +418,7 @@ function destroyCharts() {
 function appsScriptRequest(params) {
   const appsScriptUrl = getAppsScriptUrl();
   if (!appsScriptUrl) {
-    return Promise.reject(new Error("Apps Script Web App URL is not configured in index.html."));
+    return Promise.reject(new Error("Dashboard service is not configured."));
   }
 
   const callbackName = `__biotDashboardCallback_${Date.now()}_${Math.random().toString(36).slice(2)}`;
@@ -461,7 +427,7 @@ function appsScriptRequest(params) {
     const script = document.createElement("script");
     const timeoutId = window.setTimeout(() => {
       cleanup();
-      reject(new Error("Apps Script request timed out. Check the web app deployment and BIOT connectivity."));
+      reject(new Error("Unable to load dashboard data right now. Please try again."));
     }, 45000);
 
     const query = new URLSearchParams({ callback: callbackName, _: String(Date.now()) });
@@ -483,7 +449,7 @@ function appsScriptRequest(params) {
     script.async = true;
     script.onerror = () => {
       cleanup();
-      reject(new Error("Unable to reach the Apps Script endpoint. Verify the Web App URL and access settings."));
+      reject(new Error("Unable to load dashboard data right now. Please try again."));
     };
     script.src = `${appsScriptUrl}${appsScriptUrl.includes("?") ? "&" : "?"}${query.toString()}`;
     document.body.appendChild(script);
@@ -498,7 +464,7 @@ function appsScriptRequest(params) {
 
 function resolveErrorMessage(payload) {
   if (!payload) {
-    return "Apps Script returned an empty response.";
+    return "Unable to load dashboard data right now.";
   }
   if (payload.error && typeof payload.error === "string") {
     return payload.error;
@@ -506,7 +472,7 @@ function resolveErrorMessage(payload) {
   if (payload.error && typeof payload.error.message === "string") {
     return payload.error.message;
   }
-  return "Apps Script request failed.";
+  return "Unable to load dashboard data right now.";
 }
 
 function setDefaultDates() {
@@ -542,28 +508,10 @@ function buildDateRangePayload() {
   };
 }
 
-function updateEndpointUi() {
-  const url = getAppsScriptUrl();
-  const endpointStatus = document.getElementById("endpointStatus");
-  const endpointUrlLabel = document.getElementById("endpointUrlLabel");
-
-  if (!url) {
-    endpointStatus.textContent = "Configuration required";
-    endpointUrlLabel.textContent = "Set window.DASHBOARD_CONFIG.appsScriptUrl in this file before testing.";
-    return;
-  }
-
-  endpointStatus.textContent = "Configured";
-  endpointUrlLabel.textContent = url;
-}
-
 function getAppsScriptUrl() {
   const value = window.DASHBOARD_CONFIG && typeof window.DASHBOARD_CONFIG.appsScriptUrl === "string"
     ? window.DASHBOARD_CONFIG.appsScriptUrl.trim()
     : "";
-  if (!value || value.includes("PASTE_YOUR_DEPLOYED_APPS_SCRIPT_WEB_APP_URL_HERE")) {
-    return "";
-  }
   return value;
 }
 
