@@ -38,7 +38,6 @@ const SANITIZER_BREAKDOWN = [
   ["unknown", "Unknown"],
 ];
 
-const APPS_SCRIPT_MESSAGE_SOURCE = "biot-dashboard-apps-script";
 const GENERIC_REQUEST_ERROR = "Unable to load dashboard data right now. Please try again.";
 const REQUEST_TIMEOUT_MS = 90000;
 
@@ -552,40 +551,15 @@ function destroyCharts() {
 }
 
 async function appsScriptRequest(params) {
-  const appsScriptUrl = getAppsScriptUrl();
-  if (!appsScriptUrl) {
-    throw new Error("Dashboard service is not configured.");
-  }
-
-  const transports = shouldPreferPostMessageTransport()
-    ? [appsScriptPostMessageRequest, appsScriptJsonpRequest]
-    : [appsScriptJsonpRequest, appsScriptPostMessageRequest];
-
-  let lastError = null;
-  for (const transport of transports) {
-    try {
-      return await transport(params);
-    } catch (error) {
-      lastError = error;
-      if (!shouldTryFallbackTransport(error)) {
-        break;
-      }
-    }
-  }
-
-  throw lastError || new Error(GENERIC_REQUEST_ERROR);
-}
-
-function shouldPreferPostMessageTransport() {
-  return /(^|\.)github\.io$/i.test(window.location.hostname || "");
-}
-
-function shouldTryFallbackTransport(error) {
-  return !error || error.transportFailure !== false;
+  return appsScriptJsonpRequest(params);
 }
 
 function appsScriptJsonpRequest(params) {
   const appsScriptUrl = getAppsScriptUrl();
+  if (!appsScriptUrl) {
+    return Promise.reject(new Error("Dashboard service is not configured."));
+  }
+
   const callbackName = `__biotDashboardCallback_${Date.now()}_${Math.random().toString(36).slice(2)}`;
 
   return new Promise((resolve, reject) => {
@@ -646,124 +620,12 @@ function appsScriptJsonpRequest(params) {
   });
 }
 
-function appsScriptPostMessageRequest(params) {
-  const appsScriptUrl = getAppsScriptUrl();
-  const requestId = `biotDashboardFrame_${Date.now()}_${Math.random().toString(36).slice(2)}`;
-
-  return new Promise((resolve, reject) => {
-    const iframe = document.createElement("iframe");
-    iframe.setAttribute("aria-hidden", "true");
-    iframe.tabIndex = -1;
-    iframe.style.position = "absolute";
-    iframe.style.width = "0";
-    iframe.style.height = "0";
-    iframe.style.border = "0";
-    iframe.style.opacity = "0";
-    iframe.style.pointerEvents = "none";
-
-    let settled = false;
-    const timeoutId = window.setTimeout(() => {
-      finishWithError(buildTransportError(GENERIC_REQUEST_ERROR, "postmessage"));
-    }, REQUEST_TIMEOUT_MS);
-
-    const query = new URLSearchParams({
-      transport: "postmessage",
-      requestId,
-      origin: getTargetOrigin(),
-      _: String(Date.now()),
-    });
-    appendQueryParams(query, params);
-
-    function handleMessage(event) {
-      if (!isAllowedAppsScriptOrigin(event.origin)) {
-        return;
-      }
-
-      const message = event.data;
-      if (!message || message.source !== APPS_SCRIPT_MESSAGE_SOURCE || message.requestId !== requestId) {
-        return;
-      }
-
-      const payload = message.payload;
-      if (!payload || payload.ok === false) {
-        finishWithError(buildResponseError(resolveErrorMessage(payload), "postmessage"));
-        return;
-      }
-
-      finishWithSuccess(payload.data);
-    }
-
-    iframe.onload = () => {
-      window.setTimeout(() => {
-        if (!settled) {
-          finishWithError(buildTransportError(GENERIC_REQUEST_ERROR, "postmessage"));
-        }
-      }, 500);
-    };
-
-    iframe.onerror = () => {
-      finishWithError(buildTransportError(GENERIC_REQUEST_ERROR, "postmessage"));
-    };
-
-    window.addEventListener("message", handleMessage);
-    iframe.src = `${appsScriptUrl}${appsScriptUrl.includes("?") ? "&" : "?"}${query.toString()}`;
-    document.body.appendChild(iframe);
-
-    function finishWithSuccess(data) {
-      if (settled) {
-        return;
-      }
-      settled = true;
-      cleanup();
-      resolve(data);
-    }
-
-    function finishWithError(error) {
-      if (settled) {
-        return;
-      }
-      settled = true;
-      cleanup();
-      reject(error);
-    }
-
-    function cleanup() {
-      window.clearTimeout(timeoutId);
-      window.removeEventListener("message", handleMessage);
-      iframe.remove();
-    }
-  });
-}
-
 function appendQueryParams(query, params) {
   Object.entries(params).forEach(([key, value]) => {
     if (value !== undefined && value !== null && value !== "") {
       query.set(key, String(value));
     }
   });
-}
-
-function getTargetOrigin() {
-  return window.location.origin && window.location.origin !== "null" ? window.location.origin : "*";
-}
-
-function isAllowedAppsScriptOrigin(origin) {
-  if (!origin || typeof origin !== "string") {
-    return false;
-  }
-
-  const allowedOrigins = new Set([
-    "https://script.google.com",
-    "https://script.googleusercontent.com",
-  ]);
-
-  try {
-    allowedOrigins.add(new URL(getAppsScriptUrl()).origin);
-  } catch (error) {
-    // Ignore malformed configuration here; getAppsScriptUrl validation happens before requests start.
-  }
-
-  return allowedOrigins.has(origin);
 }
 
 function buildTransportError(message, transport) {
