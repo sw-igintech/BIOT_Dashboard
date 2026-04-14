@@ -18,6 +18,30 @@ const CHART_COLORS = {
   },
 };
 
+const CONNECTION_BREAKDOWN = [
+  ["connected", "Connected"],
+  ["disconnected", "Disconnected"],
+  ["unknown", "Unknown"],
+];
+
+const GLOVE_BREAKDOWN = [
+  ["small", "Small"],
+  ["medium", "Medium"],
+  ["large", "Large"],
+  ["extraLarge", "Extra Large"],
+  ["unknown", "Unknown"],
+];
+
+const SANITIZER_BREAKDOWN = [
+  ["available", "Available"],
+  ["unavailable", "Unavailable"],
+  ["unknown", "Unknown"],
+];
+
+const APPS_SCRIPT_MESSAGE_SOURCE = "biot-dashboard-apps-script";
+const GENERIC_REQUEST_ERROR = "Unable to load dashboard data right now. Please try again.";
+const REQUEST_TIMEOUT_MS = 90000;
+
 const state = {
   charts: {},
   requestId: 0,
@@ -83,6 +107,7 @@ async function refreshDashboard() {
   hideDashboardError();
 
   const organizationSelect = document.getElementById("organizationSelect");
+  const organizationField = document.getElementById("organizationField");
   const params = {
     action: "dashboard",
     from: range.from,
@@ -92,12 +117,12 @@ async function refreshDashboard() {
     timezone: range.timezone,
   };
 
-  if (!document.getElementById("organizationField").classList.contains("hidden") && organizationSelect.value) {
+  if (!organizationField.classList.contains("hidden") && organizationSelect.value) {
     params.organizationId = organizationSelect.value;
   }
 
   try {
-    const summary = await appsScriptRequest(params);
+    const summary = normalizeDashboardSummary(await appsScriptRequest(params));
     if (requestId !== state.requestId) {
       return;
     }
@@ -109,8 +134,9 @@ async function refreshDashboard() {
     if (requestId !== state.requestId) {
       return;
     }
+
     destroyCharts();
-    showDashboardError(error.message || "Unable to load dashboard data right now.");
+    showDashboardError(error && error.message ? error.message : GENERIC_REQUEST_ERROR);
   } finally {
     if (requestId === state.requestId) {
       setDashboardLoading(false);
@@ -182,6 +208,116 @@ function renderSummary(summary) {
 
   renderOfflineTable(summary.offlineDevices);
   renderSanitizerTable(summary.sanitizer);
+}
+
+function normalizeDashboardSummary(summary) {
+  const source = summary && typeof summary === "object" ? summary : {};
+  return {
+    viewer: source.viewer && typeof source.viewer === "object" ? source.viewer : {},
+    scope: source.scope && typeof source.scope === "object"
+      ? source.scope
+      : { organizationId: "all", organizationIds: [], organizationLabel: "All organizations" },
+    organizations: Array.isArray(source.organizations)
+      ? source.organizations.filter((organization) => organization && typeof organization === "object")
+      : [],
+    connection: normalizeChartSection(source.connection, CONNECTION_BREAKDOWN),
+    offlineDevices: normalizeOfflineDevices(source.offlineDevices),
+    gloves: normalizeChartSection(source.gloves, GLOVE_BREAKDOWN),
+    sanitizer: normalizeSanitizerSection(source.sanitizer),
+    meta: source.meta && typeof source.meta === "object" ? source.meta : {},
+  };
+}
+
+function normalizeChartSection(section, labels) {
+  const source = section && typeof section === "object" ? section : {};
+  const counts = {};
+
+  labels.forEach(([key]) => {
+    counts[key] = toSafeNumber(source.counts && source.counts[key]);
+  });
+
+  const derivedTotal = labels.reduce((sum, [key]) => sum + counts[key], 0);
+  const total = Number.isFinite(Number(source.total)) ? Number(source.total) : derivedTotal;
+  const breakdown = Array.isArray(source.breakdown) && source.breakdown.length
+    ? labels.map(([key, label]) => normalizeBreakdownItem(source.breakdown, key, label, counts[key], total))
+    : buildBreakdownFromCounts(counts, labels, total);
+
+  return {
+    total,
+    counts,
+    breakdown,
+  };
+}
+
+function normalizeBreakdownItem(items, key, label, fallbackValue, total) {
+  const match = Array.isArray(items)
+    ? items.find((item) => item && item.key === key) || {}
+    : {};
+  const value = Number.isFinite(Number(match.value)) ? Number(match.value) : fallbackValue;
+  const percentage = Number.isFinite(Number(match.percentage))
+    ? Number(match.percentage)
+    : total ? Number(((value / total) * 100).toFixed(1)) : 0;
+
+  return {
+    key,
+    label,
+    value,
+    percentage,
+  };
+}
+
+function buildBreakdownFromCounts(counts, labels, totalValue) {
+  const total = Number.isFinite(Number(totalValue))
+    ? Number(totalValue)
+    : labels.reduce((sum, [key]) => sum + toSafeNumber(counts[key]), 0);
+
+  return labels.map(([key, label]) => {
+    const value = toSafeNumber(counts[key]);
+    return {
+      key,
+      label,
+      value,
+      percentage: total ? Number(((value / total) * 100).toFixed(1)) : 0,
+    };
+  });
+}
+
+function normalizeOfflineDevices(section) {
+  const source = section && typeof section === "object" ? section : {};
+  const items = Array.isArray(source.items)
+    ? source.items.map((device) => ({
+        id: device && device.id ? String(device.id) : "Unknown device",
+        lastConnectedAt: device && device.lastConnectedAt ? device.lastConnectedAt : null,
+        connected: device ? device.connected : null,
+        connectionStatus: device && device.connectionStatus ? String(device.connectionStatus) : "Unknown",
+      }))
+    : [];
+
+  return {
+    total: Number.isFinite(Number(source.total)) ? Number(source.total) : items.length,
+    items,
+  };
+}
+
+function normalizeSanitizerSection(section) {
+  const normalized = normalizeChartSection(section, SANITIZER_BREAKDOWN);
+  const source = section && typeof section === "object" ? section : {};
+
+  normalized.devices = Array.isArray(source.devices)
+    ? source.devices.map((device) => ({
+        id: device && device.id ? String(device.id) : "Unknown device",
+        status: device && device.status ? String(device.status) : "Unknown",
+        statusKey: device && device.statusKey ? String(device.statusKey) : "unknown",
+        value: device ? device.value : null,
+      }))
+    : [];
+
+  return normalized;
+}
+
+function toSafeNumber(value) {
+  const numeric = Number(value);
+  return Number.isFinite(numeric) ? numeric : 0;
 }
 
 function renderMetrics(containerId, items) {
@@ -415,44 +551,92 @@ function destroyCharts() {
   state.charts = {};
 }
 
-function appsScriptRequest(params) {
+async function appsScriptRequest(params) {
   const appsScriptUrl = getAppsScriptUrl();
   if (!appsScriptUrl) {
-    return Promise.reject(new Error("Dashboard service is not configured."));
+    throw new Error("Dashboard service is not configured.");
   }
 
+  const transports = shouldPreferPostMessageTransport()
+    ? [appsScriptPostMessageRequest, appsScriptJsonpRequest]
+    : [appsScriptJsonpRequest, appsScriptPostMessageRequest];
+
+  let lastError = null;
+  for (const transport of transports) {
+    try {
+      return await transport(params);
+    } catch (error) {
+      lastError = error;
+      if (!shouldTryFallbackTransport(error)) {
+        break;
+      }
+    }
+  }
+
+  throw lastError || new Error(GENERIC_REQUEST_ERROR);
+}
+
+function shouldPreferPostMessageTransport() {
+  return /(^|\.)github\.io$/i.test(window.location.hostname || "");
+}
+
+function shouldTryFallbackTransport(error) {
+  return !error || error.transportFailure !== false;
+}
+
+function appsScriptJsonpRequest(params) {
+  const appsScriptUrl = getAppsScriptUrl();
   const callbackName = `__biotDashboardCallback_${Date.now()}_${Math.random().toString(36).slice(2)}`;
 
   return new Promise((resolve, reject) => {
     const script = document.createElement("script");
+    let settled = false;
     const timeoutId = window.setTimeout(() => {
-      cleanup();
-      reject(new Error("Unable to load dashboard data right now. Please try again."));
-    }, 45000);
+      finishWithError(buildTransportError(GENERIC_REQUEST_ERROR, "jsonp"));
+    }, REQUEST_TIMEOUT_MS);
 
     const query = new URLSearchParams({ callback: callbackName, _: String(Date.now()) });
-    Object.entries(params).forEach(([key, value]) => {
-      if (value !== undefined && value !== null && value !== "") {
-        query.set(key, String(value));
-      }
-    });
+    appendQueryParams(query, params);
 
     window[callbackName] = (payload) => {
-      cleanup();
       if (!payload || payload.ok === false) {
-        reject(new Error(resolveErrorMessage(payload)));
+        finishWithError(buildResponseError(resolveErrorMessage(payload), "jsonp"));
         return;
       }
-      resolve(payload.data);
+      finishWithSuccess(payload.data);
     };
 
     script.async = true;
+    script.onload = () => {
+      window.setTimeout(() => {
+        if (!settled) {
+          finishWithError(buildTransportError(GENERIC_REQUEST_ERROR, "jsonp"));
+        }
+      }, 1000);
+    };
     script.onerror = () => {
-      cleanup();
-      reject(new Error("Unable to load dashboard data right now. Please try again."));
+      finishWithError(buildTransportError(GENERIC_REQUEST_ERROR, "jsonp"));
     };
     script.src = `${appsScriptUrl}${appsScriptUrl.includes("?") ? "&" : "?"}${query.toString()}`;
     document.body.appendChild(script);
+
+    function finishWithSuccess(data) {
+      if (settled) {
+        return;
+      }
+      settled = true;
+      cleanup();
+      resolve(data);
+    }
+
+    function finishWithError(error) {
+      if (settled) {
+        return;
+      }
+      settled = true;
+      cleanup();
+      reject(error);
+    }
 
     function cleanup() {
       window.clearTimeout(timeoutId);
@@ -460,6 +644,140 @@ function appsScriptRequest(params) {
       script.remove();
     }
   });
+}
+
+function appsScriptPostMessageRequest(params) {
+  const appsScriptUrl = getAppsScriptUrl();
+  const requestId = `biotDashboardFrame_${Date.now()}_${Math.random().toString(36).slice(2)}`;
+
+  return new Promise((resolve, reject) => {
+    const iframe = document.createElement("iframe");
+    iframe.setAttribute("aria-hidden", "true");
+    iframe.tabIndex = -1;
+    iframe.style.position = "absolute";
+    iframe.style.width = "0";
+    iframe.style.height = "0";
+    iframe.style.border = "0";
+    iframe.style.opacity = "0";
+    iframe.style.pointerEvents = "none";
+
+    let settled = false;
+    const timeoutId = window.setTimeout(() => {
+      finishWithError(buildTransportError(GENERIC_REQUEST_ERROR, "postmessage"));
+    }, REQUEST_TIMEOUT_MS);
+
+    const query = new URLSearchParams({
+      transport: "postmessage",
+      requestId,
+      origin: getTargetOrigin(),
+      _: String(Date.now()),
+    });
+    appendQueryParams(query, params);
+
+    function handleMessage(event) {
+      if (!isAllowedAppsScriptOrigin(event.origin)) {
+        return;
+      }
+
+      const message = event.data;
+      if (!message || message.source !== APPS_SCRIPT_MESSAGE_SOURCE || message.requestId !== requestId) {
+        return;
+      }
+
+      const payload = message.payload;
+      if (!payload || payload.ok === false) {
+        finishWithError(buildResponseError(resolveErrorMessage(payload), "postmessage"));
+        return;
+      }
+
+      finishWithSuccess(payload.data);
+    }
+
+    iframe.onload = () => {
+      window.setTimeout(() => {
+        if (!settled) {
+          finishWithError(buildTransportError(GENERIC_REQUEST_ERROR, "postmessage"));
+        }
+      }, 500);
+    };
+
+    iframe.onerror = () => {
+      finishWithError(buildTransportError(GENERIC_REQUEST_ERROR, "postmessage"));
+    };
+
+    window.addEventListener("message", handleMessage);
+    iframe.src = `${appsScriptUrl}${appsScriptUrl.includes("?") ? "&" : "?"}${query.toString()}`;
+    document.body.appendChild(iframe);
+
+    function finishWithSuccess(data) {
+      if (settled) {
+        return;
+      }
+      settled = true;
+      cleanup();
+      resolve(data);
+    }
+
+    function finishWithError(error) {
+      if (settled) {
+        return;
+      }
+      settled = true;
+      cleanup();
+      reject(error);
+    }
+
+    function cleanup() {
+      window.clearTimeout(timeoutId);
+      window.removeEventListener("message", handleMessage);
+      iframe.remove();
+    }
+  });
+}
+
+function appendQueryParams(query, params) {
+  Object.entries(params).forEach(([key, value]) => {
+    if (value !== undefined && value !== null && value !== "") {
+      query.set(key, String(value));
+    }
+  });
+}
+
+function getTargetOrigin() {
+  return window.location.origin && window.location.origin !== "null" ? window.location.origin : "*";
+}
+
+function isAllowedAppsScriptOrigin(origin) {
+  if (!origin || typeof origin !== "string") {
+    return false;
+  }
+
+  const allowedOrigins = new Set([
+    "https://script.google.com",
+    "https://script.googleusercontent.com",
+  ]);
+
+  try {
+    allowedOrigins.add(new URL(getAppsScriptUrl()).origin);
+  } catch (error) {
+    // Ignore malformed configuration here; getAppsScriptUrl validation happens before requests start.
+  }
+
+  return allowedOrigins.has(origin);
+}
+
+function buildTransportError(message, transport) {
+  const error = new Error(message);
+  error.transport = transport;
+  error.transportFailure = true;
+  return error;
+}
+
+function buildResponseError(message, transport) {
+  const error = new Error(message || "Unable to load dashboard data right now.");
+  error.transport = transport;
+  error.transportFailure = false;
+  return error;
 }
 
 function resolveErrorMessage(payload) {
@@ -478,7 +796,7 @@ function resolveErrorMessage(payload) {
 function setDefaultDates() {
   const toDate = new Date();
   const fromDate = new Date(toDate);
-  fromDate.setDate(fromDate.getDate() - 29);
+  fromDate.setDate(fromDate.getDate() - 13);
 
   document.getElementById("fromDate").value = formatDateInput(fromDate);
   document.getElementById("toDate").value = formatDateInput(toDate);

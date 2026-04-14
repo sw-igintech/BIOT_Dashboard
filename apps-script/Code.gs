@@ -33,6 +33,7 @@ function doPost(e) {
 function handleWebRequest_(e, isPost) {
   var params = collectParams_(e, isPost);
   var callback = params.callback;
+  var transport = params.transport;
 
   try {
     var action = params.action || 'dashboard';
@@ -46,7 +47,7 @@ function handleWebRequest_(e, isPost) {
       throw new Error('Unknown action: ' + action);
     }
 
-    return createWebResponse_({ ok: true, data: data }, callback);
+    return createWebResponse_({ ok: true, data: data }, callback, transport, params);
   } catch (error) {
     return createWebResponse_(
       {
@@ -55,7 +56,9 @@ function handleWebRequest_(e, isPost) {
           message: error && error.message ? error.message : 'Unexpected Apps Script error.',
         },
       },
-      callback
+      callback,
+      transport,
+      params
     );
   }
 }
@@ -85,7 +88,11 @@ function collectParams_(e, isPost) {
   return params;
 }
 
-function createWebResponse_(payload, callback) {
+function createWebResponse_(payload, callback, transport, params) {
+  if (transport === 'postmessage') {
+    return createPostMessageResponse_(payload, params || {});
+  }
+
   var text;
 
   if (callback) {
@@ -100,12 +107,62 @@ function createWebResponse_(payload, callback) {
   return ContentService.createTextOutput(text).setMimeType(ContentService.MimeType.JSON);
 }
 
+function createPostMessageResponse_(payload, params) {
+  var requestId = typeof params.requestId === 'string' ? params.requestId : '';
+  var targetOrigin = sanitizeTargetOrigin_(params.origin);
+  var envelope = {
+    source: 'biot-dashboard-apps-script',
+    requestId: requestId,
+    payload: payload,
+  };
+  var serializedEnvelope = serializeForHtmlScript_(envelope);
+  var serializedTargetOrigin = JSON.stringify(targetOrigin);
+  var html =
+    '<!doctype html><html><head><meta charset="utf-8"></head><body><script>' +
+    '(function(){' +
+    'var message=' + serializedEnvelope + ';' +
+    'var targetOrigin=' + serializedTargetOrigin + ';' +
+    'if(window.parent&&window.parent!==window){window.parent.postMessage(message,targetOrigin);}' +
+    'window.close&&window.close();' +
+    '})();' +
+    '</script></body></html>';
+
+  return HtmlService
+    .createHtmlOutput(html)
+    .setXFrameOptionsMode(HtmlService.XFrameOptionsMode.ALLOWALL);
+}
+
+function sanitizeTargetOrigin_(value) {
+  if (typeof value !== 'string') {
+    return '*';
+  }
+
+  var trimmed = value.trim();
+  if (!trimmed) {
+    return '*';
+  }
+
+  if (/^https:\/\/[A-Za-z0-9.-]+(?::\d+)?$/.test(trimmed) || /^http:\/\/127\.0\.0\.1(?::\d+)?$/.test(trimmed) || /^http:\/\/localhost(?::\d+)?$/.test(trimmed)) {
+    return trimmed;
+  }
+
+  return '*';
+}
+
+function serializeForHtmlScript_(value) {
+  return JSON.stringify(value)
+    .replace(/</g, '\\u003c')
+    .replace(/>/g, '\\u003e')
+    .replace(/&/g, '\\u0026');
+}
+
 function buildHealthResponse_() {
   var config = getConfig_();
   return {
     ok: true,
     backend: 'Google Apps Script',
     biotBaseUrl: config.BIOT_BASE_URL,
+    genericEntityBaseUrl: config.GENERIC_ENTITY_BASE_URL,
   };
 }
 
@@ -130,6 +187,16 @@ function buildDashboardResponse_(params) {
       return deviceMatchesScope_(device, scope.organizationIds, viewer);
     })
     .map(normalizeDevice_);
+  var widgetErrors = {};
+  var gloves = safeWidget_(
+    function () {
+      return getGloveSummary_(config, accessToken, scope.organizationIds, dateRange);
+    },
+    emptyGloveSummary_(),
+    function (message) {
+      widgetErrors.gloves = message;
+    }
+  );
 
   return {
     viewer: viewer,
@@ -146,12 +213,14 @@ function buildDashboardResponse_(params) {
     organizations: organizations,
     connection: getConnectionSummary_(scopedDevices),
     offlineDevices: getOfflineDevices_(scopedDevices),
-    gloves: getGloveSummary_(config, accessToken, scope.organizationIds, dateRange),
+    gloves: gloves,
     sanitizer: getSanitizerSummary_(scopedDevices),
     meta: {
       generatedAt: new Date().toISOString(),
       backend: 'Google Apps Script',
       biotBaseUrl: config.BIOT_BASE_URL,
+      genericEntityBaseUrl: config.GENERIC_ENTITY_BASE_URL,
+      partialFailures: widgetErrors,
     },
   };
 }
@@ -160,6 +229,7 @@ function getConfig_() {
   var properties = PropertiesService.getScriptProperties().getProperties();
   var config = {
     BIOT_BASE_URL: properties.BIOT_BASE_URL || DEFAULT_CONFIG.BIOT_BASE_URL,
+    GENERIC_ENTITY_BASE_URL: properties.GENERIC_ENTITY_BASE_URL || properties.BIOT_GENERIC_ENTITY_BASE_URL || properties.BIOT_BASE_URL || DEFAULT_CONFIG.BIOT_BASE_URL,
     BIOT_USERNAME: properties.BIOT_USERNAME || '',
     BIOT_PASSWORD: properties.BIOT_PASSWORD || '',
   };
@@ -310,6 +380,7 @@ function getGloveSummary_(config, accessToken, organizationIds, dateRange) {
         '/generic-entity/v3/generic-entities/device_event',
         {
           accessToken: accessToken,
+          baseUrl: config.GENERIC_ENTITY_BASE_URL,
           query: {
             searchRequest: JSON.stringify(searchRequest),
           },
@@ -344,6 +415,26 @@ function getGloveSummary_(config, accessToken, organizationIds, dateRange) {
     counts: counts,
     breakdown: buildBreakdown_(counts, GLOVE_BREAKDOWN),
   };
+}
+
+function emptyGloveSummary_() {
+  var counts = zeroCounts_(GLOVE_BREAKDOWN);
+  return {
+    total: 0,
+    counts: counts,
+    breakdown: buildBreakdown_(counts, GLOVE_BREAKDOWN),
+  };
+}
+
+function safeWidget_(buildFn, fallbackValue, onError) {
+  try {
+    return buildFn();
+  } catch (error) {
+    if (typeof onError === 'function') {
+      onError(error && error.message ? error.message : 'Widget request failed.');
+    }
+    return fallbackValue;
+  }
 }
 
 function getOrganizationsForManufacturer_(viewer, selfPayload, devices) {
@@ -733,7 +824,8 @@ function normalizeTimestampSortValue_(value) {
 
 function fetchBiot_(config, method, path, options) {
   options = options || {};
-  var url = buildUrl_(config.BIOT_BASE_URL + path, options.query || {});
+  var baseUrl = options.baseUrl || config.BIOT_BASE_URL;
+  var url = buildUrl_(baseUrl + path, options.query || {});
   var requestOptions = {
     method: method,
     muteHttpExceptions: true,
